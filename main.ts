@@ -1,5 +1,6 @@
 // main.ts
-import { App, Editor, Plugin, PluginSettingTab, Setting, moment, TFile } from 'obsidian';
+import { App, Editor, Notice, Plugin, PluginSettingTab, Setting, moment, TFile } from 'obsidian';
+import * as chrono from 'chrono-node';
 import WeekPlannerFile, {
     extendFileName,
     getInboxFileName,
@@ -13,29 +14,15 @@ import WeekPlannerFile, {
 import { TODO_DONE_PREFIX, TODO_PREFIX } from "./src/constants";
 import { TodoModal } from "./src/todo-modal";
 import { DEFAULT_SETTINGS, WeekPlannerPluginSettings } from "./src/settings";
+import { TaskAction } from "./src/actions";
 
 // noinspection JSUnusedGlobalSymbols
 export default class WeekPlannerPlugin extends Plugin {
     settings: WeekPlannerPluginSettings;
+    undoStack: TaskAction[] = []; // Undo stack for task movements
 
     async onload() {
         await this.loadSettings();
-
-        this.addCommand({
-            id: "add-todo",
-            name: "Add Todo",
-            callback: () => {
-                new TodoModal(this.app, 'Create Task', 'Create', '', (task: string, list: string, date: Date) => {
-                    if (list == 'inbox') {
-                        this.insertIntoInbox(TODO_PREFIX + task);
-                    } else if (list == 'tomorrow') {
-                        this.insertIntoTomorrow(TODO_PREFIX + task);
-                    } else if (list == 'target-date') {
-                        this.insertIntoTargetDate(date, TODO_PREFIX + task);
-                    }
-                }).open();
-            },
-        });
 
         this.addCommand({
             id: 'week-planner-inbox',
@@ -89,26 +76,34 @@ export default class WeekPlannerPlugin extends Plugin {
             }
         });
 
+        this.addCommand({
+            id: 'undo-last-task-movement',
+            name: 'Undo Last Task Movement',
+            callback: () => {
+                this.undoLastAction();
+            }
+        });
+
         this.addSettingTab(new WeekPlannerSettingTab(this.app, this));
     }
 
     async insertIntoTargetDate(date: Date, todo: string) {
         let targetDateFile = new WeekPlannerFile(this.app, this.settings, this.app.vault, getDayFileName(this.settings, date));
         await targetDateFile.createIfNotExists(this.app.vault, this.app.workspace, 'Inbox');
-        await targetDateFile.insertAt(todo, 1);
+        await targetDateFile.insertAt(todo, 'Inbox');
     }
 
     async insertIntoInbox(todo: string) {
         let inbox = new WeekPlannerFile(this.app, this.settings, this.app.vault, getInboxFileName(this.settings));
         await inbox.createIfNotExists(this.app.vault, this.app.workspace, 'Inbox');
-        await inbox.insertAt(todo, 1);
+        await inbox.insertAt(todo, 'Inbox');
     }
 
     async insertIntoTomorrow(todo: string) {
         let tomorrow = getTomorrowDate(this.settings.workingDays);
         let dest = new WeekPlannerFile(this.app, this.settings, this.app.vault, getDayFileName(this.settings, tomorrow));
         await dest.createIfNotExists(this.app.vault, this.app.workspace, 'Inbox');
-        await dest.insertAt(todo, 1);
+        await dest.insertAt(todo, 'Inbox');
     }
 
     async createInbox() {
@@ -135,62 +130,148 @@ export default class WeekPlannerPlugin extends Plugin {
     }
 
     async moveTask(editor: Editor) {
-        let sourceFileName = extendFileName(this.settings, this.app.workspace.getActiveFile()?.name);
-        let source = new WeekPlannerFile(this.app, this.settings, this.app.vault, sourceFileName);
+        const line = editor.getCursor().line;
+        let taskContent = editor.getLine(line);
 
-        let destFileName: string;
-        if (source.isInbox() || source.isYesterday()) {
-            // Inbox and yesterday's todos are moved to today
-            destFileName = getDayFileName(this.settings, getNextWorkingDay(this.settings.workingDays));
-        } else {
-            // All other todos are moved to the next working day following the day represented by the current file
-            let dateFromFilename = getDateFromFilename(source.fullFileName);
-            let nextWorkingDay = getNextWorkingDay(this.settings.workingDays, moment(dateFromFilename));
-            destFileName = getDayFileName(this.settings, nextWorkingDay);
+        if (taskContent.startsWith(TODO_PREFIX) || taskContent.startsWith(TODO_DONE_PREFIX)) {
+            new TodoModal(
+                this.app,
+                async (date: Date) => {
+                    const sourceFileName = extendFileName(this.settings, this.app.workspace.getActiveFile()?.name);
+                    const source = new WeekPlannerFile(this.app, this.settings, this.app.vault, sourceFileName);
+
+                    const dest = new WeekPlannerFile(
+                        this.app,
+                        this.settings,
+                        this.app.vault,
+                        getDayFileName(this.settings, date)
+                    );
+                    await this.move(editor, source, dest, 'Inbox');
+                }
+            ).open();
         }
-
-        let dest = new WeekPlannerFile(this.app, this.settings, this.app.vault, destFileName);
-        await this.move(editor, source, dest, 'Inbox');
     }
 
     async move(editor: Editor, source: WeekPlannerFile, dest: WeekPlannerFile, header: string) {
-        await dest.createIfNotExists(this.app.vault, this.app.workspace, header);
         const line = editor.getCursor().line;
-        let todo = editor.getLine(line);
-        if (todo.startsWith(TODO_PREFIX) || todo.startsWith(TODO_DONE_PREFIX)) {
-            await dest.insertAt(todo, 1);
-            await source.deleteLine(line, todo, editor);
+        let taskContent = editor.getLine(line);
+
+        if (taskContent.startsWith(TODO_PREFIX) || taskContent.startsWith(TODO_DONE_PREFIX)) {
+            // Delete the task from the source file
+            await source.deleteLine(line, taskContent, editor);
+
+            // Check if moving within the same file
+            const movingWithinSameFile = source.fullFileName === dest.fullFileName;
+
+            // Insert the task into the destination file under the specified header
+            if (movingWithinSameFile) {
+                // Read updated content after deletion
+                const file = this.app.vault.getAbstractFileByPath(dest.fullFileName) as TFile;
+                const content = await this.app.vault.read(file);
+                await dest.insertAt(taskContent, header, content);
+            } else {
+                await dest.createIfNotExists(this.app.vault, this.app.workspace, header);
+                await dest.insertAt(taskContent, header);
+            }
+
+            // Record the action in the undo stack
+            this.undoStack.push({
+                sourceFile: source.fullFileName,
+                destFile: dest.fullFileName,
+                taskContent: taskContent,
+                sourceLine: line,
+            });
+
+            // Optional: Limit the undo stack size
+            if (this.undoStack.length > 50) {
+                this.undoStack.shift();
+            }
         }
     }
 
     async moveTaskToInbox(editor: Editor) {
-        let sourceFileName = extendFileName(this.settings, this.app.workspace.getActiveFile()?.name);
-        let source = new WeekPlannerFile(this.app, this.settings, this.app.vault, sourceFileName);
-        let dest = new WeekPlannerFile(this.app, this.settings, this.app.vault, getInboxFileName(this.settings));
-        await this.move(editor, source, dest, 'Inbox');
+        const line = editor.getCursor().line;
+        let taskContent = editor.getLine(line);
+
+        if (taskContent.startsWith(TODO_PREFIX) || taskContent.startsWith(TODO_DONE_PREFIX)) {
+            const sourceFileName = extendFileName(this.settings, this.app.workspace.getActiveFile()?.name);
+            const source = new WeekPlannerFile(this.app, this.settings, this.app.vault, sourceFileName);
+            const dest = new WeekPlannerFile(this.app, this.settings, this.app.vault, getInboxFileName(this.settings));
+
+            await this.move(editor, source, dest, 'Inbox');
+        }
     }
 
     async moveAnywhere(editor: Editor) {
         const line = editor.getCursor().line;
-        let todo = editor.getLine(line);
-        if (todo.startsWith(TODO_PREFIX) || todo.startsWith(TODO_DONE_PREFIX)) {
-            todo = todo.substring(TODO_PREFIX.length, todo.length);
-            new TodoModal(this.app, 'Move Task', 'Move', todo, (task: string, list: string, date: Date) => {
-                const sourceFileName = extendFileName(this.settings, this.app.workspace.getActiveFile()?.name);
-                const source = new WeekPlannerFile(this.app, this.settings, this.app.vault, sourceFileName);
+        let taskContent = editor.getLine(line);
 
-                if (list == 'inbox') {
-                    this.moveTaskToInbox(editor);
-                } else if (list == 'tomorrow') {
-                    const tomorrow = getTomorrowDate(this.settings.workingDays);
-                    const dest = new WeekPlannerFile(this.app, this.settings, this.app.vault, getDayFileName(this.settings, tomorrow));
-                    this.move(editor, source, dest, 'Inbox');
-                } else if (list == 'target-date') {
-                    const dest = new WeekPlannerFile(this.app, this.settings, this.app.vault, getDayFileName(this.settings, date));
-                    this.move(editor, source, dest, 'Inbox');
+        if (taskContent.startsWith(TODO_PREFIX) || taskContent.startsWith(TODO_DONE_PREFIX)) {
+            new TodoModal(
+                this.app,
+                async (date: Date) => {
+                    const sourceFileName = extendFileName(this.settings, this.app.workspace.getActiveFile()?.name);
+                    const source = new WeekPlannerFile(this.app, this.settings, this.app.vault, sourceFileName);
+
+                    const dest = new WeekPlannerFile(
+                        this.app,
+                        this.settings,
+                        this.app.vault,
+                        getDayFileName(this.settings, date)
+                    );
+                    await this.move(editor, source, dest, 'Inbox');
                 }
-            }).open();
+            ).open();
         }
+    }
+
+    async undoLastAction() {
+        if (this.undoStack.length === 0) {
+            new Notice('No actions to undo.');
+            return;
+        }
+
+        const lastAction = this.undoStack.pop();
+
+        if (!lastAction) {
+            new Notice('Failed to retrieve the last action.');
+            return;
+        }
+
+        const { sourceFile, destFile, taskContent, sourceLine } = lastAction;
+
+        // Remove the task from the destination file
+        const destFileObj = this.app.vault.getAbstractFileByPath(destFile) as TFile;
+        if (!destFileObj) {
+            new Notice('Destination file not found.');
+            return;
+        }
+
+        let destContent = await this.app.vault.read(destFileObj);
+        let destLines = destContent.split('\n');
+        const taskIndex = destLines.indexOf(taskContent);
+
+        if (taskIndex === -1) {
+            new Notice('Task not found in destination file.');
+            return;
+        }
+
+        destLines.splice(taskIndex, 1);
+        await this.app.vault.modify(destFileObj, destLines.join('\n'));
+
+        // Insert the task back into the source file at the original line
+        const sourceFileObj = this.app.vault.getAbstractFileByPath(sourceFile) as TFile;
+        if (!sourceFileObj) {
+            new Notice('Source file not found.');
+            return;
+        }
+
+        let sourceContent = await this.app.vault.read(sourceFileObj);
+        let sourceLines = sourceContent.split('\n');
+        sourceLines.splice(sourceLine, 0, taskContent);
+        await this.app.vault.modify(sourceFileObj, sourceLines.join('\n'));
+
+        new Notice('Undo successful.');
     }
 
     onunload() {
@@ -220,7 +301,7 @@ class WeekPlannerSettingTab extends PluginSettingTab {
 
         containerEl.createEl('h2', { text: 'Settings for Week Planner plugin.' });
 
-				new Setting(containerEl)
+        new Setting(containerEl)
             .setName('Daily Note Template')
             .setDesc('Path to the template file for daily notes.')
             .addText(text => text

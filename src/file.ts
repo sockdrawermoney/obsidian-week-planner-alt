@@ -5,157 +5,129 @@ import { dateString, DATE_FORMAT, isWorkingDay, allDaysValid } from "./date";
 import { WeekPlannerPluginSettings } from "./settings";
 
 export default class WeekPlannerFile {
-    app: App;
-    vault: Vault;
-    fullFileName: string;
-    settings: WeekPlannerPluginSettings;
+  public readonly fullFileName: string;
+  public readonly settings: WeekPlannerPluginSettings;
 
-    constructor(app: App, settings: WeekPlannerPluginSettings, vault: Vault, fullFileName: string) {
-        this.app = app;
-        this.settings = settings;
-        this.vault = vault;
-        this.fullFileName = fullFileName;
-    }
+  constructor(
+    private app: App,
+    settings: WeekPlannerPluginSettings,
+    private vault: Vault,
+    fullFileName: string
+  ) {
+    this.fullFileName = normalizePath(fullFileName);
+    this.settings = settings;
+  }
 
-    async deleteLine(line: number, s: string, editor: Editor) {
-        const from: EditorPosition = { line: line, ch: 0 };
-
-        // Replace trailing newline only if the line to delete isn't the last one
-        let delta = 0;
-        if (line < editor.lastLine()) {
-            delta = path.sep.length;
+  async createIfNotExists(vault: Vault, workspace: Workspace, header: string) {
+    const fileExists = await vault.adapter.exists(this.fullFileName);
+    if (!fileExists) {
+      let content = '';
+      // If daily note template is specified, use it
+      if (this.settings.dailyNoteTemplate) {
+        const templateContent = await this.getDailyNoteTemplateContent();
+        if (templateContent) {
+          content += templateContent + '\n';
         }
+      }
+      if (header) {
+        content += `## ${header}\n\n`;
+      }
+      await vault.create(this.fullFileName, content);
+    }
+  }
 
-        const to: EditorPosition = { line: line, ch: s.length + delta };
-        editor.replaceRange('', from, to);
+  async createIfNotExistsAndOpen(vault: Vault, workspace: Workspace, header: string) {
+    await this.createIfNotExists(vault, workspace, header);
+    const file = this.app.vault.getAbstractFileByPath(this.fullFileName);
+    if (file instanceof TFile) {
+      workspace.openLinkText(this.fullFileName, '', true);
+    }
+  }
+
+  async getDailyNoteTemplateContent(): Promise<string | null> {
+    const templatePath = this.settings.dailyNoteTemplate;
+
+    if (templatePath) {
+      const normalizedTemplatePath = normalizePath(templatePath);
+      const templateFile = this.vault.getAbstractFileByPath(normalizedTemplatePath);
+
+      if (templateFile && templateFile instanceof TFile) {
+        // Read and return the template content
+        return await this.vault.read(templateFile);
+      } else {
+        console.warn(`Template file not found at path: ${normalizedTemplatePath}`);
+      }
+    } else {
+      console.warn('No template path set for daily notes in plugin settings.');
     }
 
-    async insertAt(line: string, at: number) {
-        const fileContents = await this.getFileContents();
-        if (fileContents == undefined) {
-            console.log('Could not read file');
-            return;
-        }
+    return null;
+  }
 
-        const todos = fileContents.split('\n');
-        todos.splice(at, 0, line);
-        await this.updateFile(todos.join('\n'));
+async insertAt(text: string, header: string, fileContent?: string) {
+  const file = this.vault.getAbstractFileByPath(this.fullFileName) as TFile;
+  if (!file) {
+      console.error(`File not found: ${this.fullFileName}`);
+      return;
+  }
+  const content = fileContent || await this.vault.read(file);
+  const lines = content.split('\n');
+
+  const headerLineIndex = this.findHeaderLine(lines, header);
+  if (headerLineIndex !== -1) {
+      // Header found, insert immediately after the header line
+      let insertPosition = headerLineIndex + 1;
+
+      // Remove any blank lines between the header and tasks
+      while (insertPosition < lines.length && lines[insertPosition].trim() === '') {
+          lines.splice(insertPosition, 1);
+      }
+
+      // Insert the task and a blank line
+      lines.splice(insertPosition, 0, text, '');
+  } else {
+      // Header not found, insert the header, task, and a blank line at the top
+      lines.unshift('', text, `## ${header}`);
+  }
+
+  const newContent = lines.join('\n');
+  await this.vault.modify(file, newContent);
+}
+
+  findHeaderLine(lines: string[], header: string): number {
+    const headerText = `## ${header}`;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim() === headerText) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  async deleteLine(lineNumber: number, lineText: string, editor: any) {
+    const file = this.vault.getAbstractFileByPath(this.fullFileName) as TFile;
+    if (!file) {
+      console.error(`File not found: ${this.fullFileName}`);
+      return;
+    }
+    const content = await this.vault.read(file);
+    const lines = content.split('\n');
+
+    if (lines[lineNumber] === lineText) {
+      lines.splice(lineNumber, 1);
+    } else {
+      // If the line text doesn't match, try to find the line
+      const index = lines.indexOf(lineText);
+      if (index !== -1) {
+        lines.splice(index, 1);
+      } else {
+        console.warn('Line not found in file:', lineText);
+      }
     }
 
-    async getFileContents() {
-        return await this.vault.adapter.read(this.fullFileName);
-    }
-
-    async updateFile(fileContents: string) {
-        try {
-            return await this.vault.adapter.write(this.fullFileName, fileContents);
-        } catch (error) {
-            console.log(error);
-        }
-    }
-
-    async createIfNotExists(vault: Vault, workspace: Workspace, header: string) {
-        const fileExists = await vault.adapter.exists(this.fullFileName);
-        if (!fileExists) {
-            await this.ensureDirectories();
-            const templateContent = await this.getDailyNoteTemplateContent();
-            let fileContent = '';
-            if (templateContent) {
-                // Process the template variables
-                const processedTemplate = this.processTemplateContent(templateContent);
-
-                // Insert '## Inbox' under the page's header
-                const lines = processedTemplate.split('\n');
-                let insertIndex = 1; // Default to insert after the first line
-                // Find the first header line (starting with '#')
-                for (let i = 0; i < lines.length; i++) {
-                    if (lines[i].startsWith('#')) {
-                        insertIndex = i + 1;
-                        break;
-                    }
-                }
-                lines.splice(insertIndex, 0, '## ' + header);
-                fileContent = lines.join('\n');
-            } else {
-                fileContent = '## ' + header;
-            }
-            await vault.create(this.fullFileName, fileContent);
-        }
-    }
-
-    async createIfNotExistsAndOpen(vault: Vault, workspace: Workspace, header: string) {
-        await this.createIfNotExists(vault, workspace, header);
-        await workspace.openLinkText(this.obsidianFile(this.fullFileName), '', false);
-    }
-
-    obsidianFile(filename: string) {
-        return filename.replace('.md', '');
-    }
-
-    isInbox() {
-        return this.fullFileName == getInboxFileName(this.settings);
-    }
-
-    isYesterday() {
-        const d = getYesterdayDate(this.settings.workingDays);
-        return this.fullFileName.endsWith(dateString(moment(d)) + '.md');
-    }
-
-    async ensureDirectories() {
-        const directories = this.fullFileName.split('/');
-        let directoryPath = "";
-        for (let i = 0; i < directories.length - 1; i++) {
-            directoryPath = directoryPath + directories[i] + '/';
-
-            try {
-                const normalizedPath = normalizePath(directoryPath);
-                const folderExists = await this.vault.adapter.exists(normalizedPath, false);
-                if (!folderExists) {
-                    await this.vault.createFolder(normalizedPath);
-                }
-            } catch (error) {
-                console.log(error);
-            }
-        }
-    }
-
-    async getDailyNoteTemplateContent(): Promise<string | null> {
-			const templatePath = this.settings.dailyNoteTemplate;
-	
-			if (templatePath) {
-					const normalizedTemplatePath = normalizePath(templatePath);
-					const templateFile = this.vault.getAbstractFileByPath(normalizedTemplatePath);
-	
-					if (templateFile && templateFile instanceof TFile) {
-							// Read and return the template content
-							return await this.vault.read(templateFile);
-					} else {
-							console.warn(`Template file not found at path: ${templatePath}`);
-					}
-			} else {
-					console.warn('No template path set for daily notes in plugin settings.');
-			}
-	
-			return null;
-		}
-
-    processTemplateContent(templateContent: string): string {
-        // Replace template variables (e.g., {{date}}, {{time}}, {{title}})
-        let output = templateContent;
-
-        const date = moment();
-        output = output.replace(/{{\s*date\s*}}/g, date.format('YYYY-MM-DD'));
-        output = output.replace(/{{\s*time\s*}}/g, date.format('HH:mm'));
-        output = output.replace(/{{\s*title\s*}}/g, this.fullFileName.replace('.md', ''));
-
-        // Add more replacements as needed
-        // Handle custom date formats: {{date:format}}
-
-        const dateFormatRegex = /{{\s*date:(.*?)\s*}}/g;
-        output = output.replace(dateFormatRegex, (match, fmt) => date.format(fmt));
-
-        return output;
-    }
+    const newContent = lines.join('\n');
+    await this.vault.modify(file, newContent);
+  }
 }
 
 export function extendFileName(settings: WeekPlannerPluginSettings, filename?: string) {

@@ -1,68 +1,81 @@
-<script lang="ts">
-	import {onMount} from 'svelte';
-	import {moment} from "obsidian";
-	import {DATE_FORMAT} from "../date";
+<!-- edit-todo.svelte -->
+<script>
+  import { onMount } from 'svelte';
+  import { createEventDispatcher } from 'svelte';
+  import * as chrono from 'chrono-node';
 
-	export let onSubmit: (description: string, list: string, date: Date) => void | Promise<void>;
+  export let onSubmit;
+  export let modalEl; // Receive the modal element from the parent
 
-	export let task;
-	export let buttonLabel;
+  let dateInput = '';
+  let parsedDate = null;
 
-	let descriptionInput: HTMLInputElement;
-	let todo: {
-		description: string;
-		list: string;
-		targetDate: string
-	} = {
-		description: task,
-		list: 'inbox',
-		targetDate: moment().format(DATE_FORMAT)
-	};
+  const dispatch = createEventDispatcher();
 
-	onMount(() => {
-		setTimeout(() => {
-			descriptionInput.focus();
-		}, 10);
-	});
+  function handleInput() {
+    if (dateInput.trim() !== '') {
+      const dateInputNormalized = dateInput.replace(/\btom\b/gi, 'tomorrow');
+      const results = chrono.parse(dateInputNormalized, new Date(), { forwardDate: true });
+      if (results.length > 0) {
+        parsedDate = results[0].start.date();
+      } else {
+        parsedDate = null;
+      }
+    } else {
+      parsedDate = null;
+    }
+  }
 
-	const _onSubmit = () => {
-		onSubmit(todo.description.trim(), todo.list, moment(todo.targetDate).toDate());
-	};
+  function handleKeydown(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      e.stopPropagation();
+      submit();
+    }
+  }
+
+  function submit() {
+    if (parsedDate) {
+      onSubmit(parsedDate);
+    } else {
+      if (modalEl) {
+        modalEl.classList.add('shake');
+        setTimeout(() => {
+          modalEl.classList.remove('shake');
+        }, 500);
+      }
+    }
+  }
+
+  onMount(() => {
+    handleInput(); // Initial parse
+    const inputElement = document.getElementById('dateInput');
+    if (inputElement) {
+      inputElement.focus();
+    }
+  });
 </script>
 
-<form on:submit|preventDefault={_onSubmit}>
-	<div>
-		<label for="description" class="label" style="display:inline-block; width: 100px;">Description</label>
-		<input
-			bind:value={todo.description}
-			bind:this={descriptionInput}
-			id="description"
-			type="text"
-			style="width: 70%"
-			required
-			placeholder="Short description of your task"
-		/>
-		<hr/>
-		<div>
-			<label for="target-list" style="display:inline-block; width: 100px;">Target List</label>
-			<select id="target-list" bind:value={todo.list}>
-				<option value="inbox">Inbox</option>
-				<option value="tomorrow">Tomorrow</option>
-				<option value="target-date">Specific date</option>
-			</select>
-		</div>
-		<hr/>
-		<div>
-			<label style="display:inline-block; width: 100px;" for="target-date">Target Date</label>
-			<input type="date" id="target-date"
-				   name="target-date"
-				   bind:value={todo.targetDate}
-			>
-			<small style="margin-left: 8px">Only considered for target list 'Specific date'</small>
-		</div>
-	</div>
-	<hr/>
-	<div>
-		<button type="submit" class="mod-cta">{buttonLabel}</button>
-	</div>
-</form>
+<input
+  id="dateInput"
+  type="text"
+  aria-label="Enter new date for the task"
+  bind:value="{dateInput}"
+  on:input="{handleInput}"
+  on:keydown="{handleKeydown}"
+  placeholder="Enter date (e.g., 'tomorrow', 'next Friday')"
+  style="width: 100%; padding: 0.5em; font-size: 1em;"
+/>
+
+<style>
+  .shake {
+    animation: shake 0.5s;
+  }
+  @keyframes shake {
+    0% { transform: translateX(0); }
+    25% { transform: translateX(-10px); }
+    50% { transform: translateX(10px); }
+    75% { transform: translateX(-10px); }
+    100% { transform: translateX(0); }
+  }
+</style>
