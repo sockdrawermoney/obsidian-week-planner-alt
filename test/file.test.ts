@@ -1,16 +1,20 @@
-import {DATE_FORMAT} from "../src/date";
+// test/file.test.ts
+import { DATE_FORMAT } from "../src/date";
 import * as Moment from "moment";
-import {getWeekFileName} from "../src/file";
+import { getDayFileName } from "../src/file";
+import { WeekPlannerPluginSettings } from "../src/settings";
 
 jest.mock('obsidian', () => ({
-	App: jest.fn().mockImplementation(),
-	moment: () => Moment()
+    App: jest.fn().mockImplementation(),
+    moment: () => Moment()
 }));
 
-test('getWeekFileName', () => {
-	const sun = Moment("2022-10-23", DATE_FORMAT)
-	expect(getWeekFileName(sun)).toBe('Week Planner/Weeks/Calweek-2022-42.md');
-
-	const mon = Moment("2022-10-24", DATE_FORMAT)
-	expect(getWeekFileName(mon)).toBe('Week Planner/Weeks/Calweek-2022-43.md');
+test('getDayFileName', () => {
+    const settings: WeekPlannerPluginSettings = {
+        workingDays: 'Mon,Tue,Wed,Thu,Fri',
+        baseDir: 'Daily',
+        dailyNoteTemplate: '' // Add this line
+    };
+    const date = Moment("2022-10-24", DATE_FORMAT).toDate();
+    expect(getDayFileName(settings, date)).toBe('Daily/2022-10-24.md');
 });

@@ -1,168 +1,218 @@
-import {EditorPosition, Vault, Editor, Workspace, normalizePath, moment} from 'obsidian';
+import { App, EditorPosition, Vault, Editor, Workspace, normalizePath, moment, TFile } from 'obsidian';
+import { getDailyNoteSettings } from 'obsidian-daily-notes-interface';
 import * as path from 'path';
-import {allDaysValid, getWeekday, isWorkingDay, getCalendarWeek, dateString, DATE_FORMAT} from "./date";
-import {WeekPlannerPluginSettings} from "./settings";
+import { dateString, DATE_FORMAT, isWorkingDay, allDaysValid } from "./date";
+import { WeekPlannerPluginSettings } from "./settings";
 
 export default class WeekPlannerFile {
-	vault: Vault
-	fullFileName: string
-	settings: WeekPlannerPluginSettings
+    app: App;
+    vault: Vault;
+    fullFileName: string;
+    settings: WeekPlannerPluginSettings;
 
-	constructor(settings: WeekPlannerPluginSettings, vault: Vault, fullFileName: string) {
-		this.settings = settings;
-		this.vault = vault;
-		this.fullFileName = fullFileName
-	}
+    constructor(app: App, settings: WeekPlannerPluginSettings, vault: Vault, fullFileName: string) {
+        this.app = app;
+        this.settings = settings;
+        this.vault = vault;
+        this.fullFileName = fullFileName;
+    }
 
-	async deleteLine(line: number, s: string, editor: Editor) {
-		const from: EditorPosition = {line: line, ch: 0};
+    async deleteLine(line: number, s: string, editor: Editor) {
+        const from: EditorPosition = { line: line, ch: 0 };
 
-		// replace trailing newline only if the line to delete isn't the last one
-		let delta = 0
-		if (line < editor.lastLine()) {
-			delta = path.sep.length
-		}
+        // Replace trailing newline only if the line to delete isn't the last one
+        let delta = 0;
+        if (line < editor.lastLine()) {
+            delta = path.sep.length;
+        }
 
-		const to: EditorPosition = {line: line, ch: s.length + delta};
-		editor.replaceRange('', from, to)
-	}
+        const to: EditorPosition = { line: line, ch: s.length + delta };
+        editor.replaceRange('', from, to);
+    }
 
-	async insertAt(line: string, at: number) {
-		const filecontents = await this.getFileContents()
-		if (filecontents == undefined) {
-			console.log('could not read file');
-			return
-		}
+    async insertAt(line: string, at: number) {
+        const fileContents = await this.getFileContents();
+        if (fileContents == undefined) {
+            console.log('Could not read file');
+            return;
+        }
 
-		const todos = filecontents.split('\n')
-		todos.splice(at, 0, line)
-		await this.updateFile(todos.join('\n'));
-	}
+        const todos = fileContents.split('\n');
+        todos.splice(at, 0, line);
+        await this.updateFile(todos.join('\n'));
+    }
 
-	async getFileContents() {
-		return await this.vault.adapter.read(this.fullFileName);
-	}
+    async getFileContents() {
+        return await this.vault.adapter.read(this.fullFileName);
+    }
 
-	async updateFile(fileContents: string) {
-		try {
-			return await this.vault.adapter.write(this.fullFileName, fileContents);
-		} catch (error) {
-			console.log(error)
-		}
-	}
+    async updateFile(fileContents: string) {
+        try {
+            return await this.vault.adapter.write(this.fullFileName, fileContents);
+        } catch (error) {
+            console.log(error);
+        }
+    }
 
-	async createIfNotExists(vault: Vault, workspace: Workspace, header: string) {
-		const fileExists = await vault.adapter.exists(this.fullFileName);
-		if (!fileExists) {
-			await this.ensureDirectories()
-			await vault.create(this.fullFileName, '## ' + header)
-		}
-	}
+    async createIfNotExists(vault: Vault, workspace: Workspace, header: string) {
+        const fileExists = await vault.adapter.exists(this.fullFileName);
+        if (!fileExists) {
+            await this.ensureDirectories();
+            const templateContent = await this.getDailyNoteTemplateContent();
+            let fileContent = '';
+            if (templateContent) {
+                // Process the template variables
+                const processedTemplate = this.processTemplateContent(templateContent);
 
-	async createIfNotExistsAndOpen(vault: Vault, workspace: Workspace, header: string) {
-		await this.createIfNotExists(vault, workspace, header)
-		await workspace.openLinkText(this.obsidianFile(this.fullFileName), '', false)
-	}
+                // Insert '## Inbox' under the page's header
+                const lines = processedTemplate.split('\n');
+                let insertIndex = 1; // Default to insert after the first line
+                // Find the first header line (starting with '#')
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].startsWith('#')) {
+                        insertIndex = i + 1;
+                        break;
+                    }
+                }
+                lines.splice(insertIndex, 0, '## ' + header);
+                fileContent = lines.join('\n');
+            } else {
+                fileContent = '## ' + header;
+            }
+            await vault.create(this.fullFileName, fileContent);
+        }
+    }
 
-	obsidianFile(filename: string) {
-		return filename.replace('.md', '');
-	}
+    async createIfNotExistsAndOpen(vault: Vault, workspace: Workspace, header: string) {
+        await this.createIfNotExists(vault, workspace, header);
+        await workspace.openLinkText(this.obsidianFile(this.fullFileName), '', false);
+    }
 
-	isInbox() {
-		return this.fullFileName == getInboxFileName(this.settings);
-	}
+    obsidianFile(filename: string) {
+        return filename.replace('.md', '');
+    }
 
-	isYesterday() {
-		const d = getYesterdayDate()
-		return this.fullFileName.endsWith(dateString(moment(d)) + '-' + getWeekday(d) + '.md')
-	}
+    isInbox() {
+        return this.fullFileName == getInboxFileName(this.settings);
+    }
 
-	async ensureDirectories() {
-		const directories = this.fullFileName.split('/')
-		let directoryPath = ""
-		for (let i = 0; i < directories.length - 1; i++) {
-			directoryPath = directoryPath + directories[i] + '/'
-			console.log('dir path:' + directoryPath)
+    isYesterday() {
+        const d = getYesterdayDate(this.settings.workingDays);
+        return this.fullFileName.endsWith(dateString(moment(d)) + '.md');
+    }
 
-			try {
-				const normalizedPath = normalizePath(directoryPath);
-				const folderExists = await this.vault.adapter.exists(normalizedPath, false)
-				if (!folderExists) {
-					await this.vault.createFolder(normalizedPath);
-				}
-			} catch (error) {
-				console.log(error)
+    async ensureDirectories() {
+        const directories = this.fullFileName.split('/');
+        let directoryPath = "";
+        for (let i = 0; i < directories.length - 1; i++) {
+            directoryPath = directoryPath + directories[i] + '/';
+
+            try {
+                const normalizedPath = normalizePath(directoryPath);
+                const folderExists = await this.vault.adapter.exists(normalizedPath, false);
+                if (!folderExists) {
+                    await this.vault.createFolder(normalizedPath);
+                }
+            } catch (error) {
+                console.log(error);
+            }
+        }
+    }
+
+    async getDailyNoteTemplateContent(): Promise<string | null> {
+			const templatePath = this.settings.dailyNoteTemplate;
+	
+			if (templatePath) {
+					const normalizedTemplatePath = normalizePath(templatePath);
+					const templateFile = this.vault.getAbstractFileByPath(normalizedTemplatePath);
+	
+					if (templateFile && templateFile instanceof TFile) {
+							// Read and return the template content
+							return await this.vault.read(templateFile);
+					} else {
+							console.warn(`Template file not found at path: ${templatePath}`);
+					}
+			} else {
+					console.warn('No template path set for daily notes in plugin settings.');
 			}
+	
+			return null;
 		}
-	}
+
+    processTemplateContent(templateContent: string): string {
+        // Replace template variables (e.g., {{date}}, {{time}}, {{title}})
+        let output = templateContent;
+
+        const date = moment();
+        output = output.replace(/{{\s*date\s*}}/g, date.format('YYYY-MM-DD'));
+        output = output.replace(/{{\s*time\s*}}/g, date.format('HH:mm'));
+        output = output.replace(/{{\s*title\s*}}/g, this.fullFileName.replace('.md', ''));
+
+        // Add more replacements as needed
+        // Handle custom date formats: {{date:format}}
+
+        const dateFormatRegex = /{{\s*date:(.*?)\s*}}/g;
+        output = output.replace(dateFormatRegex, (match, fmt) => date.format(fmt));
+
+        return output;
+    }
 }
 
 export function extendFileName(settings: WeekPlannerPluginSettings, filename?: string) {
-	if (filename == 'Inbox.md') {
-		return settings.baseDir + '/' + 'Inbox.md'
-	} else {
-		return settings.baseDir + '/' + settings.daysDir + '/' + filename
-	}
+    if (filename == 'Inbox.md') {
+        return settings.baseDir + '/' + 'Inbox.md';
+    } else {
+        return settings.baseDir + '/' + filename;
+    }
 }
 
 export function getInboxFileName(settings: WeekPlannerPluginSettings) {
-	return settings.baseDir + '/' + 'Inbox.md'
+    return settings.baseDir + '/' + 'Inbox.md';
 }
 
 export function getDayFileName(settings: WeekPlannerPluginSettings, date: Date) {
-	return settings.baseDir + '/' + settings.daysDir + '/' + dateString(moment(date)) + "-" + getWeekday(date) + '.md'
+    return settings.baseDir + '/' + dateString(moment(date)) + '.md';
 }
 
-export function getDateFromFilename(filename: String): moment.Moment {
-	if (filename == undefined || filename == '') {
-		return moment()
-	}
-	const parts = filename.split('/')
-	if (parts.length == 0) {
-		return moment()
-	}
-	const dateString = parts[parts.length - 1]
-	const withoutWeekday = dateString.substring(0, dateString.lastIndexOf('-'))
-	return moment(withoutWeekday, DATE_FORMAT).set({hour: 0, minute: 0, second: 0, millisecond: 0})
+export function getDateFromFilename(filename: string): moment.Moment {
+    if (!filename) {
+        return moment();
+    }
+    const parts = filename.split('/');
+    const dateString = parts[parts.length - 1].replace('.md', '');
+    return moment(dateString, DATE_FORMAT).set({ hour: 0, minute: 0, second: 0, millisecond: 0 });
 }
 
-export function getWeekFileName(settings: WeekPlannerPluginSettings, m: moment.Moment) {
-	const year = m.year()
-	return settings.baseDir + '/' + settings.weeksDir + '/' + 'Calweek-' + year + '-' + getCalendarWeek(m) + '.md'
-}
-
-export function getNextWorkingDay(workingDays: string) {
-	let today = new Date()
-	while (!isWorkingDay(today, workingDays)) {
-		today.setDate(today.getDate() + 1);
-	}
-	return today
+export function getNextWorkingDay(workingDays: string, fromDate?: moment.Moment) {
+    let date = fromDate ? fromDate.clone() : moment();
+    do {
+        date.add(1, 'days');
+    } while (!isWorkingDay(date.toDate(), workingDays));
+    return date.toDate();
 }
 
 export function getTomorrowDate(workingDays: string, date?: moment.Moment) {
-	let today = date !== undefined ? date : moment()
-	let tomorrow = today.add(1, 'days');
-	while (!isWorkingDay(tomorrow.toDate(), workingDays)) {
-		tomorrow = moment(tomorrow).add(1, 'days');
-	}
-	return tomorrow.toDate()
+    let today = date !== undefined ? date.clone() : moment();
+    let tomorrow = today.clone();
+    do {
+        tomorrow.add(1, 'days');
+    } while (!isWorkingDay(tomorrow.toDate(), workingDays));
+    return tomorrow.toDate();
 }
 
-export function getYesterdayDate() {
-	const date = new Date()
-	date.setDate(date.getDate() - 1);
-	while (!isWorkingDay(date)) {
-		date.setDate(date.getDate() - 1);
-	}
-	return date
+export function getYesterdayDate(workingDays: string) {
+    let date = moment().subtract(1, 'days');
+    while (!isWorkingDay(date.toDate(), workingDays)) {
+        date.subtract(1, 'days');
+    }
+    return date.toDate();
 }
 
 export function isValidWorkingDaysString(value: string) {
-	if (value == undefined || value.trim() == '') {
-		console.log("working day string undefined or empty")
-		return false
-	}
+    if (value == undefined || value.trim() == '') {
+        console.log("Working day string undefined or empty");
+        return false;
+    }
 
-	return allDaysValid(value.split(','));
+    return allDaysValid(value.split(','));
 }
-
