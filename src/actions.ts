@@ -3,4 +3,6 @@ export interface TaskAction {
   destFile: string;
   taskContent: string;
   sourceLine: number;
+  insertedLines: number[];
+  headerAdded: boolean;
 }
