@@ -1,4 +1,3 @@
-// todo-modal.ts
 import { App, Modal } from 'obsidian';
 // @ts-ignore
 import EditTodo from './ui/edit-todo.svelte';

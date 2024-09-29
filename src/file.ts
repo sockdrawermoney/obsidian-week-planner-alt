@@ -1,4 +1,4 @@
-import { App, EditorPosition, Vault, Editor, Workspace, normalizePath, moment, TFile } from 'obsidian';
+import { App, Vault, Editor, Workspace, normalizePath, moment, TFile } from 'obsidian';
 import { getDailyNoteSettings } from 'obsidian-daily-notes-interface';
 import * as path from 'path';
 import { dateString, DATE_FORMAT, isWorkingDay, allDaysValid } from "./date";
@@ -69,6 +69,14 @@ export default class WeekPlannerFile {
     return null;
   }
 
+  /**
+   * Inserts content below the YAML frontmatter in the file.
+   * If frontmatter exists, inserts after it. Otherwise, inserts at the top.
+   * @param text - The text to insert.
+   * @param header - The header under which to insert the text (e.g., 'Inbox').
+   * @param fileContent - Optional pre-read content of the file.
+   * @returns InsertResult indicating inserted line numbers and if a header was added.
+   */
   async insertAt(text: string, header: string, fileContent?: string): Promise<InsertResult> {
     const file = this.vault.getAbstractFileByPath(this.fullFileName) as TFile;
     if (!file) {
@@ -77,36 +85,62 @@ export default class WeekPlannerFile {
     }
     const content = fileContent || (await this.vault.read(file));
     const lines = content.split('\n');
-  
-    const headerLineIndex = this.findHeaderLine(lines, header);
+
+    // Detect YAML frontmatter
+    const frontMatterRegex = /^---\n[\s\S]*?\n---\n?/;
+    const frontMatterMatch = content.match(frontMatterRegex);
+    let insertStart = 0;
+
+    if (frontMatterMatch) {
+      // Insert after frontmatter
+      insertStart = frontMatterMatch[0].length;
+    }
+
+    // Find the header line after frontmatter
+    const linesAfterFrontMatter = lines.slice(content.slice(0, insertStart).split('\n').length);
+    const headerLineIndexRelative = this.findHeaderLine(linesAfterFrontMatter, header);
+    const headerLineIndex = headerLineIndexRelative !== -1 ? headerLineIndexRelative + insertStart : -1;
+
     let insertedLines: number[] = [];
     let headerAdded = false;
-  
+
     if (headerLineIndex !== -1) {
       // Header found, insert immediately after the header line
       let insertPosition = headerLineIndex + 1;
-  
+
       // Remove any blank lines between the header and tasks
       while (insertPosition < lines.length && lines[insertPosition].trim() === '') {
         lines.splice(insertPosition, 1);
       }
-  
+
       // Insert the task and a blank line
       lines.splice(insertPosition, 0, text, '');
       insertedLines.push(insertPosition, insertPosition + 1);
     } else {
-      // Header not found, insert the header, task, and a blank line at the top
-      lines.unshift('', text, `## ${header}`);
-      insertedLines.push(0, 1, 2); // Lines added at positions 0, 1, 2
+      // Header not found, insert the header, task, and a blank line after frontmatter or at top
+      const headerContent = `## ${header}\n${text}\n`;
+      if (frontMatterMatch) {
+        lines.splice(insertStart, 0, headerContent);
+        insertedLines.push(insertStart, insertStart + 1);
+      } else {
+        lines.unshift('', headerContent);
+        insertedLines.push(0, 1, 2); // Lines added at positions 0, 1, 2
+      }
       headerAdded = true;
     }
-  
+
     const newContent = lines.join('\n');
     await this.vault.modify(file, newContent);
-  
+
     return { insertedLines, headerAdded };
   }
 
+  /**
+   * Finds the index of the specified header in the given lines.
+   * @param lines - Array of lines to search within.
+   * @param header - The header to find (e.g., 'Inbox').
+   * @returns The index of the header line, or -1 if not found.
+   */
   findHeaderLine(lines: string[], header: string): number {
     const headerText = `## ${header}`;
     for (let i = 0; i < lines.length; i++) {
@@ -117,6 +151,12 @@ export default class WeekPlannerFile {
     return -1;
   }
 
+  /**
+   * Deletes a specific line from the file.
+   * @param lineNumber - The line number to delete.
+   * @param lineText - The exact text of the line to delete.
+   * @param editor - The editor instance (unused in this context).
+   */
   async deleteLine(lineNumber: number, lineText: string, editor: any) {
     const file = this.vault.getAbstractFileByPath(this.fullFileName) as TFile;
     if (!file) {

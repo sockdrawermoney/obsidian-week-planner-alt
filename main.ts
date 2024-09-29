@@ -1,5 +1,4 @@
-// main.ts
-import { App, Editor, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
+import { App, Editor, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder } from 'obsidian';
 import * as chrono from 'chrono-node';
 import WeekPlannerFile, {
   extendFileName,
@@ -233,36 +232,47 @@ export default class WeekPlannerPlugin extends Plugin {
   }
 
   async getOrCreateTagPage(tagName: string): Promise<TFile | null> {
-    // Try to find the tag page
-    const tagPagePath = `Tags/${tagName}.md`; // Adjust the path as needed
+    const tagBaseFolder = this.settings.tagBaseFolder; // Accessed from settings
+    const sanitizedTagName = tagName.replace(/\//g, ' ').trim(); // Replace all slashes with spaces
+  
+    const tagPagePath = `${tagBaseFolder}/${sanitizedTagName}.md`; // Construct the file path
     let tagPageFile = this.app.vault.getAbstractFileByPath(tagPagePath) as TFile;
-
+  
     if (!tagPageFile) {
-      // **Create the event object with the correct type**
-      let evt: TagPageEvent = { tag: tagName };
-
-      // Trigger Tag Wrangler to create the tag page
-      this.app.workspace.trigger('tag-page:will-create', evt);
-
-      if (evt.file instanceof TFile) {
-        tagPageFile = evt.file;
-      } else if (evt.file instanceof Promise) {
-        tagPageFile = await evt.file;
-      } else {
-        // If no other plugin handled the creation, create the file ourselves
-        try {
-          tagPageFile = await this.app.vault.create(tagPagePath, `# ${tagName}\n`);
-        } catch (error) {
-          console.error('Failed to create tag page:', error);
-          return null;
+        // Trigger event for other plugins (e.g., Tag Wrangler) to handle creation
+        let evt: TagPageEvent = { tag: tagName };
+        this.app.workspace.trigger('tag-page:will-create', evt);
+  
+        if (evt.file instanceof TFile) {
+            tagPageFile = evt.file;
+        } else if (evt.file instanceof Promise) {
+            tagPageFile = await evt.file;
+        } else {
+            // If no other plugin handles it, create the file ourselves
+            try {
+                // Ensure the base folder exists
+                let folder = this.app.vault.getAbstractFileByPath(tagBaseFolder);
+                if (!folder || !(folder instanceof TFolder)) { // Updated line
+                    await this.app.vault.createFolder(tagBaseFolder);
+                    new Notice(`Folder "${tagBaseFolder}" was created automatically.`);
+                    folder = this.app.vault.getAbstractFileByPath(tagBaseFolder);
+                }
+  
+                // Create the tag page file within the base folder
+                tagPageFile = await this.app.vault.create(tagPagePath, `# ${sanitizedTagName}\n`);
+                new Notice(`Tag page for #${sanitizedTagName} created successfully at "${tagPagePath}".`);
+            } catch (error) {
+                console.error('Failed to create tag page:', error);
+                new Notice('Failed to create tag page.');
+                return null;
+            }
         }
-      }
-
-      // Notify other plugins that the tag page was created
-      evt.file = tagPageFile;
-      this.app.workspace.trigger('tag-page:did-create', evt);
+  
+        // Notify other plugins that the tag page was created
+        evt.file = tagPageFile;
+        this.app.workspace.trigger('tag-page:did-create', evt);
     }
-
+  
     return tagPageFile;
   }
 
@@ -497,7 +507,19 @@ class WeekPlannerSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
-
+    
+    new Setting(containerEl)
+      .setName('Tag Base Folder')
+      .setDesc('Specify the base folder where tag pages will be created. Default is "_tags".')
+      .addText(text => text
+          .setPlaceholder('_tags')
+          .setValue(this.plugin.settings.tagBaseFolder)
+          .onChange(async (value) => {
+              this.plugin.settings.tagBaseFolder = value.trim() || '_tags'; // Fallback to '_tags' if empty
+              await this.plugin.saveSettings();
+          })
+      );
+    
     new Setting(containerEl)
       .setName('Base directory')
       .setDesc("Week planner's root directory. Will be created if it doesn't exist.")
