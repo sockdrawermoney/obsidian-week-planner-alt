@@ -496,7 +496,7 @@ export default class WeekPlannerPlugin extends Plugin {
 
         // After removing inserted lines, check if the header is now empty
         if (!headerAdded) {
-            const headerLineIndex = destLines.findIndex((line) => line.trim() === `## ${header}`);
+            const headerLineIndex = destLines.findIndex((line) => line.trim() === `## ${header}` || line.trim() === `# ${header}`);
 
             if (headerLineIndex !== -1) {
                 // Check if there are any tasks under the header
@@ -505,7 +505,7 @@ export default class WeekPlannerPlugin extends Plugin {
                     if (destLines[i].startsWith(TODO_PREFIX) || destLines[i].startsWith(TODO_DONE_PREFIX)) {
                         hasTasks = true;
                         break;
-                    } else if (destLines[i].startsWith('## ')) {
+                    } else if (destLines[i].startsWith('#')) {
                         // Next header, break the loop
                         break;
                     }
