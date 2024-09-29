@@ -459,85 +459,95 @@ export default class WeekPlannerPlugin extends Plugin {
     }
 
     async undoLastAction() {
-        if (this.undoStack.length === 0) {
-            new Notice('No actions to undo.');
-            return;
-        }
-
-        const lastAction = this.undoStack.pop();
-
-        if (!lastAction) {
-            new Notice('Failed to retrieve the last action.');
-            return;
-        }
-
-        const { sourceFile, destFile, taskContent, sourceLine, insertedLines, headerAdded } = lastAction;
-        const header = 'Inbox'; // Use the appropriate header here or modify according to your needs
-
-        // Remove the inserted lines from the destination file
-        const destFileObj = this.app.vault.getAbstractFileByPath(destFile) as TFile;
-
-        if (!destFileObj) {
-            new Notice('Destination file not found.');
-            return;
-        }
-
-        let destContent = await this.app.vault.read(destFileObj);
-        let destLines = destContent.split('\n');
-
-        // Sort the inserted lines in descending order to avoid index shifting issues
-        insertedLines.sort((a, b) => b - a);
-
-        for (let lineIndex of insertedLines) {
-            if (lineIndex >= 0 && lineIndex < destLines.length) {
-                destLines.splice(lineIndex, 1);
-            }
-        }
-
-        // After removing inserted lines, check if the header is now empty
-        if (!headerAdded) {
-            const headerLineIndex = destLines.findIndex((line) => line.trim() === `## ${header}` || line.trim() === `# ${header}`);
-
-            if (headerLineIndex !== -1) {
-                // Check if there are any tasks under the header
-                let hasTasks = false;
-                for (let i = headerLineIndex + 1; i < destLines.length; i++) {
-                    if (destLines[i].startsWith(TODO_PREFIX) || destLines[i].startsWith(TODO_DONE_PREFIX)) {
-                        hasTasks = true;
-                        break;
-                    } else if (destLines[i].startsWith('#')) {
-                        // Next header, break the loop
-                        break;
-                    }
-                }
-
-                if (!hasTasks) {
-                    // Remove the header and any blank lines after it
-                    destLines.splice(headerLineIndex, 1);
-                    while (destLines[headerLineIndex] === '') {
-                        destLines.splice(headerLineIndex, 1);
-                    }
-                }
-            }
-        }
-
-        await this.app.vault.modify(destFileObj, destLines.join('\n'));
-
-        // Insert the task back into the source file at the original line
-        const sourceFileObj = this.app.vault.getAbstractFileByPath(sourceFile) as TFile;
-
-        if (!sourceFileObj) {
-            new Notice('Source file not found.');
-            return;
-        }
-
-        let sourceContent = await this.app.vault.read(sourceFileObj);
-        let sourceLines = sourceContent.split('\n');
-        sourceLines.splice(sourceLine, 0, taskContent);
-        await this.app.vault.modify(sourceFileObj, sourceLines.join('\n'));
-
-        new Notice('Undo successful.');
-    }
+      if (this.undoStack.length === 0) {
+          new Notice('No actions to undo.');
+          return;
+      }
+  
+      const lastAction = this.undoStack.pop();
+  
+      if (!lastAction) {
+          new Notice('Failed to retrieve the last action.');
+          return;
+      }
+  
+      const { sourceFile, destFile, taskContent, sourceLine, insertedLines, headerAdded } = lastAction;
+      const header = 'Inbox'; // Use the appropriate header here or modify according to your needs
+  
+      // Remove the inserted lines from the destination file
+      const destFileObj = this.app.vault.getAbstractFileByPath(destFile) as TFile;
+  
+      if (!destFileObj) {
+          new Notice('Destination file not found.');
+          return;
+      }
+  
+      let destContent = await this.app.vault.read(destFileObj);
+      let destLines = destContent.split('\n');
+  
+      // Sort the inserted lines in descending order to avoid index shifting issues
+      insertedLines.sort((a, b) => b - a);
+  
+      for (let lineIndex of insertedLines) {
+          if (lineIndex >= 0 && lineIndex < destLines.length) {
+              destLines.splice(lineIndex, 1);
+          }
+      }
+  
+      // After removing inserted lines, check if the header is now empty
+      if (!headerAdded) {
+          const headerLineIndex = destLines.findIndex((line) => line.trim() === `## ${header}` || line.trim() === `# ${header}`);
+  
+          if (headerLineIndex !== -1) {
+              // Check if there are any tasks under the header
+              let hasTasks = false;
+              for (let i = headerLineIndex + 1; i < destLines.length; i++) {
+                  if (destLines[i].startsWith(TODO_PREFIX) || destLines[i].startsWith(TODO_DONE_PREFIX)) {
+                      hasTasks = true;
+                      break;
+                  } else if (destLines[i].startsWith('#')) {
+                      // Next header, break the loop
+                      break;
+                  }
+              }
+  
+              if (!hasTasks) {
+                  // Remove the header and any blank lines after it
+                  destLines.splice(headerLineIndex, 1);
+                  while (destLines[headerLineIndex] === '') {
+                      destLines.splice(headerLineIndex, 1);
+                  }
+              }
+          }
+      }
+  
+      await this.app.vault.modify(destFileObj, destLines.join('\n'));
+  
+      // Insert the task back into the source file at the original line
+      const sourceFileObj = this.app.vault.getAbstractFileByPath(sourceFile) as TFile;
+  
+      if (!sourceFileObj) {
+          new Notice('Source file not found.');
+          return;
+      }
+  
+      let sourceContent = await this.app.vault.read(sourceFileObj);
+      let sourceLines = sourceContent.split('\n');
+  
+      // Insert the task back
+      sourceLines.splice(sourceLine, 0, taskContent);
+      await this.app.vault.modify(sourceFileObj, sourceLines.join('\n'));
+  
+      // Restore the # Inbox header if it was removed
+      if (headerAdded) {
+          // Assuming the header was at the top after frontmatter
+          const headerContent = `# ${header}`;
+          sourceLines.splice(sourceLine, 0, headerContent, taskContent, '');
+          await this.app.vault.modify(sourceFileObj, sourceLines.join('\n'));
+      }
+  
+      new Notice('Undo successful.');
+  }
 
     onunload() {
         // Cleanup if necessary

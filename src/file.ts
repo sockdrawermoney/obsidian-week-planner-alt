@@ -1,3 +1,5 @@
+// src/file.ts
+
 import { App, Vault, Editor, Workspace, normalizePath, moment, TFile } from 'obsidian';
 import { getDailyNoteSettings } from 'obsidian-daily-notes-interface';
 import * as path from 'path';
@@ -35,7 +37,7 @@ export default class WeekPlannerFile {
                 }
             }
             if (header) {
-                content += `## ${header}\n\n`;
+                content += `# ${header}\n\n`;
             }
             await vault.create(this.fullFileName, content);
         }
@@ -157,7 +159,7 @@ export default class WeekPlannerFile {
     }
 
     /**
-     * Deletes a specific line from the file.
+     * Deletes a specific line from the file and cleans up the header if necessary.
      * @param lineNumber - The line number to delete.
      * @param lineText - The exact text of the line to delete.
      * @param editor - The editor instance (unused in this context).
@@ -172,6 +174,7 @@ export default class WeekPlannerFile {
         const content = await this.vault.read(file);
         const lines = content.split('\n');
 
+        // Delete the specified line
         if (lines[lineNumber] === lineText) {
             lines.splice(lineNumber, 1);
         } else {
@@ -181,6 +184,37 @@ export default class WeekPlannerFile {
                 lines.splice(index, 1);
             } else {
                 console.warn('Line not found in file:', lineText);
+                return; // Exit early if the line wasn't found
+            }
+        }
+
+        // After deletion, check if # Inbox has any remaining todos
+        const inboxHeaderIndex = lines.findIndex(line => line.trim() === '# Inbox' || line.trim() === '## Inbox');
+
+        if (inboxHeaderIndex !== -1) {
+            // Check for remaining todos under # Inbox
+            let hasTodos = false;
+            for (let i = inboxHeaderIndex + 1; i < lines.length; i++) {
+                const trimmedLine = lines[i].trim();
+                if (trimmedLine.startsWith('- [ ]') || trimmedLine.startsWith('- [x]')) {
+                    hasTodos = true;
+                    break;
+                } else if (trimmedLine.startsWith('#')) {
+                    // Reached another header; stop searching
+                    break;
+                }
+            }
+
+            if (!hasTodos) {
+                // Remove the # Inbox header
+                lines.splice(inboxHeaderIndex, 1);
+
+                // Also remove the blank line immediately after the header, if it exists
+                if (lines[inboxHeaderIndex] === '') {
+                    lines.splice(inboxHeaderIndex, 1);
+                }
+
+                console.log(`Removed # Inbox header from ${this.fullFileName} as it has no remaining todos.`);
             }
         }
 
