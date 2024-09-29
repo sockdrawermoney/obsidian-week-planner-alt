@@ -1,8 +1,8 @@
 /* fakecss:/Users/adam/Documents/Obsidian Vault/.obsidian/plugins/obsidian-week-planner-alt/src/ui/edit-todo.esbuild-svelte-fake-css */
-.modal-container.svelte-dk2kpa.svelte-dk2kpa {
+.modal-container.svelte-rp2d72.svelte-rp2d72 {
   position: relative;
 }
-.suggestions.svelte-dk2kpa.svelte-dk2kpa {
+.suggestions.svelte-rp2d72.svelte-rp2d72 {
   position: absolute;
   top: 2.5em;
   left: 0;
@@ -17,11 +17,11 @@
   margin: 0;
   list-style: none;
 }
-.suggestions.svelte-dk2kpa li.svelte-dk2kpa {
+.suggestions.svelte-rp2d72 li.svelte-rp2d72 {
   padding: 0.5em;
   cursor: pointer;
 }
-.suggestions.svelte-dk2kpa li.active.svelte-dk2kpa,
-.suggestions.svelte-dk2kpa li.svelte-dk2kpa:hover {
+.suggestions.svelte-rp2d72 li.active.svelte-rp2d72,
+.suggestions.svelte-rp2d72 li.svelte-rp2d72:hover {
   background: var(--background-modifier-hover);
 }
